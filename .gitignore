@@ -276,3 +276,12 @@ cdk.out
 
 # Frontend
 frontend/public/config.js
+# Local datasets, credentials, generated corpus and benchmark results
+.vector-lab/
+data/*.pdf
+!data/uk-aip-heathrow-demo.pdf
+.env.*
+!.env.example
+coverage/
+
+cdk.out*/
