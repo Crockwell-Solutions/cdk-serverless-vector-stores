@@ -1,0 +1,58 @@
+[
+  {
+    "id": "units",
+    "question": "Which units does the UK AIP specify for aerodrome runway lengths and for altitudes?",
+    "modality": "text",
+    "expectedPages": [1],
+    "notes": "GEN 2.1-1 units table. Runway distances in metres; altitudes in feet and flight levels. Labels are for the bundled nine-page PDF."
+  },
+  {
+    "id": "time-reference",
+    "question": "What calendar and time standard does the UK AIP use, and when does the summer period begin and end?",
+    "modality": "text",
+    "expectedPages": [1],
+    "notes": "GEN 2.1-1 section 2; UTC and Gregorian calendar."
+  },
+  {
+    "id": "pressure-datum",
+    "question": "According to ENR 1.7, what standard pressure datum is used for flight levels?",
+    "modality": "text",
+    "expectedPages": [2],
+    "notes": "ENR 1.7-1 paragraph 3.4 states 1013.25 hPa. Demonstration of citation retrieval, not operational advice."
+  },
+  {
+    "id": "london-transition",
+    "question": "Which transition altitude is listed for the London TMA in the transition altitudes table?",
+    "modality": "text",
+    "expectedPages": [3],
+    "notes": "ENR 1.7-2 table lists 6000 FT. Check the dated source rather than treating this as current flight information."
+  },
+  {
+    "id": "north-runway",
+    "question": "What dimensions and surface are published for Heathrow runway 09L/27R?",
+    "modality": "text",
+    "expectedPages": [5],
+    "notes": "AD 2.EGLL-5, EGLL AD 2.12: 3901 x 50 M, grooved asphalt."
+  },
+  {
+    "id": "south-runway",
+    "question": "What dimensions and surface are published for Heathrow runway 09R/27L?",
+    "modality": "text",
+    "expectedPages": [6],
+    "notes": "AD 2.EGLL-6: 3658 x 50 M, grooved asphalt."
+  },
+  {
+    "id": "displaced-threshold",
+    "question": "What landing distance and displaced-threshold distance are listed for Heathrow runway 09L?",
+    "modality": "text",
+    "expectedPages": [6],
+    "notes": "AD 2.EGLL-6: LDA 3592 M and displacement 309 M. Table parsing is deliberately challenging."
+  },
+  {
+    "id": "runway-lighting",
+    "question": "What colour threshold and runway end lights are shown for Heathrow runway 09R in the approach and runway lighting table?",
+    "modality": "text",
+    "expectedPages": [7],
+    "notes": "AD 2.EGLL-7: green threshold and red end lights. Verify table row association."
+  }
+]

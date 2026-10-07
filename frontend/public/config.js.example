@@ -1,9 +1,0 @@
-// Local development runtime config — this file is excluded from production builds.
-// The CDK stack injects the real values at deploy time.
-window.__RUNTIME_CONFIG__ = {
-  apiUrl: "https://xyz.com",
-  cognitoUserPoolId: "eu-west-1_XXXXXXXXX",
-  cognitoClientId: "your-cognito-client-id",
-  cognitoRegion: "eu-west-1",
-  adminMode: false,
-};

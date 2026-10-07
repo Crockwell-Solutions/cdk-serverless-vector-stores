@@ -2,10 +2,11 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Build",
+      "label": "Validate vector lab",
       "type": "npm",
-      "script": "build:esbuild",
-      "problemMatcher": []
+      "script": "check",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$tsc"]
     }
   ]
 }

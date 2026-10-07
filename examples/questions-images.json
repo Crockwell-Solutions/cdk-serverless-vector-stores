@@ -1,0 +1,30 @@
+[
+  {
+    "id": "heathrow-layout",
+    "question": "On the London Heathrow aerodrome chart, how are the two parallel runways positioned relative to the central terminal area?",
+    "modality": "image",
+    "expectedPages": [8, 9],
+    "notes": "Visual relationship: central terminal area between the parallel runways. Review the original chart in the generated answer."
+  },
+  {
+    "id": "terminal-five",
+    "question": "On the Heathrow aerodrome chart, is Terminal 5 at the western or eastern end of the airport, relative to Terminals 2 and 3?",
+    "modality": "image",
+    "expectedPages": [8],
+    "notes": "Terminal 5 is west of the central terminals. This tests chart interpretation, not simply PDF text extraction."
+  },
+  {
+    "id": "terminal-four",
+    "question": "Where is Terminal 4 shown relative to the southern runway on the Heathrow aerodrome chart?",
+    "modality": "image",
+    "expectedPages": [8],
+    "notes": "Terminal 4 is south of the southern runway. Do not infer a taxi route."
+  },
+  {
+    "id": "chart-highlights",
+    "question": "How are the hot spots visually highlighted on the Heathrow aerodrome chart?",
+    "modality": "image",
+    "expectedPages": [8],
+    "notes": "Red outlined circles and red-bordered explanatory callouts. Human review of the image answer is required."
+  }
+]

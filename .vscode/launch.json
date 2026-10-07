@@ -1,30 +1,16 @@
 {
+  "version": "0.2.0",
   "configurations": [
     {
-      "type": "aws-sam",
-      "request": "direct-invoke",
-      "name": "Healthcheck Function",
-      "preLaunchTask": "Build",
-      "invokeTarget": {
-        "target": "code",
-        "architecture": "arm64",
-        "projectRoot": "dist",
-        "lambdaHandler": "api/healthcheck.handler"
-      },
-      "lambda": {
-        "runtime": "nodejs22.x",
-        "payload": {
-          "json": {
-            "event": "event"
-          }
-        }
-      },
-      "sam": {
-        "localArguments": [
-          "--container-env-vars",
-          "${workspaceFolder}/local.env.json"
-        ]
-      }
+      "type": "node",
+      "request": "launch",
+      "name": "Vector lab CLI",
+      "runtimeArgs": ["--import", "tsx"],
+      "program": "${workspaceFolder}/src/cli.ts",
+      "args": ["plan"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"]
     }
   ]
 }

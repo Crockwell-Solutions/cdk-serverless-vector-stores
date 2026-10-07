@@ -1,45 +1,16 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "module": "commonjs",
-    "lib": [
-      "es2020",
-      "dom"
-    ],
-    "declaration": true,
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM"],
     "strict": true,
-    "noImplicitAny": true,
-    "strictNullChecks": true,
-    "noImplicitThis": true,
-    "alwaysStrict": true,
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "noImplicitReturns": true,
-    "noFallthroughCasesInSwitch": false,
-    "inlineSourceMap": true,
-    "inlineSources": true,
-    "experimentalDecorators": true,
-    "strictPropertyInitialization": false,
-    "typeRoots": [
-      "./node_modules/@types"
-    ],
-    "types": [
-      "node",
-      "jest"
-    ],
-    "baseUrl": ".",
-    "paths": {
-      "@config/*": ["./config/*"],
-      "@config": ["./config/index.ts"],
-      "@constructs/*": ["./lib/constructs/*"],
-      "@constructs": ["./lib/constructs/index.ts"],
-      "@shared/*": ["./src/shared/*"],
-      "@shared": ["./src/shared/index.ts"]
-    }
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"],
+    "resolveJsonModule": true
   },
-  "exclude": [
-    "node_modules",
-    "cdk.out",
-    "frontend"
-  ]
+  "include": ["bin/**/*.ts", "lib/**/*.ts", "src/**/*.ts", "test/**/*.ts"]
 }

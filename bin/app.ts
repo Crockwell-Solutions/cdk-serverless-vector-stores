@@ -1,27 +1,8 @@
 #!/usr/bin/env node
-import 'source-map-support/register';
 import { App } from 'aws-cdk-lib';
-import { PipelineStack } from '../lib/pipeline-stack';
-import { ApplicationStage } from '../lib/application-stage';
-import { Stage, getEnvironmentConfig, pipelineConfig } from '../config';
-
+import { VectorLabStack } from '../lib/vector-lab-stack.js';
 const app = new App();
-
-pipelineConfig.pipelines.forEach((pipeline) => {
-  const envConfig = pipeline.envConfig;
-
-  new PipelineStack(app, `PipelineStack-${envConfig.name}`, {
-    description: `${envConfig.name} Pipeline Stack`,
-    env: {
-      region: pipelineConfig.pipelineRegion,
-      account: pipelineConfig.pipelineAccount,
-    },
-    repoName: pipelineConfig.repoName,
-    gitHubConnectionArn: pipelineConfig.gitHubConnectionArn,
-    envConfig: envConfig,
-    branch: pipeline.branch,
-    preApproval: pipeline.preApproval,
-  });
+new VectorLabStack(app, 'VectorLab', {
+  env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: app.node.tryGetContext('region') ?? 'eu-west-1' },
+  description: 'AWS serverless vector store comparison',
 });
-
-new ApplicationStage(app, 'Local', getEnvironmentConfig(Stage.local));
