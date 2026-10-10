@@ -1,13 +1,13 @@
 import {
   DynamoDBClient,
   DescribeTableCommand,
-  UpdateTableCommand,
   BatchWriteItemCommand,
   SearchVectorsCommand,
   type SearchVectorsCommandInput,
 } from '@aws-sdk/client-dynamodb';
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb';
 import { awsConfig } from '../config.js';
+import { assertDynamoIndex } from '../dynamodb-index.js';
 import {
   chunkSchema,
   type Filter,
@@ -17,6 +17,10 @@ import {
   type SearchResponse,
 } from '../types.js';
 import { sleep, waitFor } from '../io.js';
+
+/**
+ * Build the native vector query, aliasing filter fields and requesting chunk metadata plus capacity usage.
+ */
 export function dynamoSearchInput(
   config: LabConfig,
   vector: number[],
@@ -24,6 +28,7 @@ export function dynamoSearchInput(
   filter: Filter,
 ): SearchVectorsCommandInput {
   const fields = Object.entries(filter).filter(([, value]) => value !== undefined);
+
   return {
     TableName: config.tableName,
     IndexName: config.indexName,
@@ -36,57 +41,37 @@ export function dynamoSearchInput(
     ReturnConsumedCapacity: 'TOTAL',
   };
 }
+
+/**
+ * Keep chunk metadata and embeddings together in a DynamoDB table with a native vector index.
+ */
 export class DynamoStore implements VectorStore {
   readonly name = 'dynamodb' as const;
+
+  /**
+   * Use the configured lab credentials, or an injected SDK client for tests.
+   */
   constructor(
     private config: LabConfig,
     private client = new DynamoDBClient(awsConfig(config)),
   ) {}
+
+  /**
+   * Validate the vector index managed by CloudFormation and wait for searchable readiness.
+   */
   async init() {
-    const describe = async () =>
-      (await this.client.send(new DescribeTableCommand({ TableName: this.config.tableName }))).Table;
-    const existing = (await describe())?.VectorIndexes?.find((v) => v.IndexName === this.config.indexName);
-    if (
-      existing &&
-      (existing.Dimensions !== this.config.dimensions ||
-        existing.DistanceFunction !== 'COSINE' ||
-        existing.VectorAttribute?.AttributeName !== 'vector')
-    )
-      throw new Error('DynamoDB index schema mismatch. Use a fresh lab.');
-    if (!existing)
-      await this.client.send(
-        new UpdateTableCommand({
-          TableName: this.config.tableName,
-          AttributeDefinitions: [
-            { AttributeName: 'corpus', AttributeType: 'S' },
-            { AttributeName: 'modality', AttributeType: 'S' },
-            { AttributeName: 'page', AttributeType: 'N' },
-          ],
-          VectorIndexUpdates: [
-            {
-              Create: {
-                IndexName: this.config.indexName,
-                VectorAttribute: { AttributeName: 'vector' },
-                Dimensions: this.config.dimensions,
-                DistanceFunction: 'COSINE',
-                Projection: { ProjectionType: 'ALL' },
-                SearchSchema: [
-                  { AttributeName: 'corpus', SearchSchemaElementType: 'HASH' },
-                  { AttributeName: 'modality', SearchSchemaElementType: 'INLINE_FILTER' },
-                  { AttributeName: 'page', SearchSchemaElementType: 'INLINE_FILTER' },
-                ],
-              },
-            },
-          ],
-        }),
-      );
-    await waitFor(
-      'DynamoDB vector index ACTIVE',
-      async () =>
-        (await describe())?.VectorIndexes?.some(
-          (v) => v.IndexName === this.config.indexName && v.IndexStatus === 'ACTIVE' && !v.Backfilling,
-        ) ?? false,
-    );
+    /**
+     * Validate fresh control-plane state before accepting the deployed index as ready.
+     */
+    const indexReady = async () => {
+      const table = (await this.client.send(new DescribeTableCommand({ TableName: this.config.tableName }))).Table;
+      const index = assertDynamoIndex(table, this.config.indexName, this.config.dimensions);
+
+      return index.IndexStatus === 'ACTIVE' && !index.Backfilling;
+    };
+
+    await waitFor('DynamoDB vector index ACTIVE', indexReady);
+
     // The separate search endpoint can lag the control-plane ACTIVE status.
     await waitFor(
       'DynamoDB search endpoint readiness',
@@ -99,21 +84,31 @@ export class DynamoStore implements VectorStore {
             error instanceof Error &&
             error.name === 'ValidationException' &&
             /specified index|backfill/i.test(error.message)
-          )
+          ) {
             return false;
+          }
+
           throw error;
         }
       },
       180_000,
     );
   }
+
+  /**
+   * Upsert stable chunk IDs in batches of 25, retrying only writes DynamoDB leaves unprocessed.
+   */
   async upsert(records: VectorRecord[]) {
     for (let offset = 0; offset < records.length; offset += 25) {
       let pending = records.slice(offset, offset + 25).map(({ imagePath: _imagePath, ...record }) => ({
         PutRequest: { Item: marshall(record, { removeUndefinedValues: true }) },
       }));
+
       for (let attempt = 0; pending.length; attempt++) {
-        if (attempt === 8) throw new Error(`DynamoDB still has ${pending.length} unprocessed writes; rerun ingest.`);
+        if (attempt === 8) {
+          throw new Error(`DynamoDB still has ${pending.length} unprocessed writes; rerun ingest.`);
+        }
+
         const response = await this.client.send(
           new BatchWriteItemCommand({
             RequestItems: { [this.config.tableName]: pending },
@@ -121,12 +116,22 @@ export class DynamoStore implements VectorStore {
           }),
         );
         pending = (response.UnprocessedItems?.[this.config.tableName] ?? []) as typeof pending;
-        if (pending.length) await sleep(Math.min(5000, 100 * 2 ** attempt) + Math.random() * 100);
+
+        if (pending.length) {
+          // Capped exponential backoff with jitter avoids retrying throttled writes in lockstep.
+          await sleep(Math.min(5000, 100 * 2 ** attempt) + Math.random() * 100);
+        }
       }
     }
   }
+
+  /**
+   * Return projected chunks and consumed capacity, preserving the backend's distance scores.
+   */
   async search(vector: number[], topK: number, filter: Filter): Promise<SearchResponse> {
     const input = dynamoSearchInput(this.config, vector, topK, filter);
+
+    // These aliases support the projection regardless of which optional filters are present.
     input.ExpressionAttributeNames = {
       ...input.ExpressionAttributeNames,
       '#p': 'page',
@@ -135,6 +140,7 @@ export class DynamoStore implements VectorStore {
       '#t': 'text',
     };
     const result = await this.client.send(new SearchVectorsCommand(input));
+
     return {
       hits: (result.SearchResults ?? []).map((hit) => ({
         ...chunkSchema.parse(unmarshall(hit.Item ?? {})),

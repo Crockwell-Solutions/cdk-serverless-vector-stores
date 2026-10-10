@@ -4,7 +4,7 @@
 
 1. Prepare the complete bundled nine-page PDF. Preserve the corpus manifest: source hash, physical pages, chunk size, overlap, rendering size and schema version.
 2. Embed once. Vision captions are a separately cached preprocessing operation. The resulting dataset has an identity derived from the preparation/model configuration. The exact float32 vectors are written to all selected backends.
-3. Initialize and ingest. Use `verify` after ingestion to avoid confusing refresh lag with retrieval accuracy. Increase its probe count for a larger run. Do not mutate the corpus while benchmarking.
+3. Deploy with CDK, then run `init` and ingest. CDK creates the DynamoDB and S3 vector indexes; `init` creates or validates the OpenSearch mapping and checks the deployed indexes. Use `verify` after ingestion to avoid confusing refresh lag with retrieval accuracy. Increase its probe count for a larger run. Do not mutate the corpus while benchmarking.
 4. Run the same question list, top-k, and filters. Queries are embedded before timing starts. SDK credentials are also resolved before the first search.
 5. Keep first-request measurements separate from warmup and measured rounds. Rotate backend order per round; keep host/network location constant. Record concurrency.
 6. Keep the JSON and CSV alongside package-lock.json and your code revision. Repeat independent runs at different times. Use significantly more than the smoke-test default before drawing conclusions about tail latency.

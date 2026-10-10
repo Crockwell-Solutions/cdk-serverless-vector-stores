@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import {
   DynamoDBClient,
@@ -6,6 +6,8 @@ import {
   BatchWriteItemCommand,
   DescribeTableCommand,
   UpdateTableCommand,
+  type TableDescription,
+  type VectorIndexDescription,
 } from '@aws-sdk/client-dynamodb';
 import { S3VectorsClient, QueryVectorsCommand, PutVectorsCommand } from '@aws-sdk/client-s3vectors';
 import { marshall } from '@aws-sdk/util-dynamodb';
@@ -15,9 +17,42 @@ import { OpenSearchStore, openSearchQuery } from '../src/stores/opensearch.js';
 import { config, record } from './fixtures.js';
 const ddb = mockClient(DynamoDBClient),
   s3 = mockClient(S3VectorsClient);
+
+/**
+ * Model the deployed vector index and its key/filter attribute definitions.
+ */
+function deployedTable(indexOverrides: Partial<VectorIndexDescription> = {}): TableDescription {
+  return {
+    AttributeDefinitions: [
+      { AttributeName: 'id', AttributeType: 'S' },
+      { AttributeName: 'corpus', AttributeType: 'S' },
+      { AttributeName: 'modality', AttributeType: 'S' },
+      { AttributeName: 'page', AttributeType: 'N' },
+    ],
+    VectorIndexes: [
+      {
+        IndexName: 'documents',
+        IndexStatus: 'ACTIVE',
+        Backfilling: false,
+        Dimensions: 1024,
+        DistanceFunction: 'COSINE',
+        VectorAttribute: { AttributeName: 'vector' },
+        Projection: { ProjectionType: 'ALL' },
+        SearchSchema: [
+          { AttributeName: 'corpus', SearchSchemaElementType: 'HASH' },
+          { AttributeName: 'modality', SearchSchemaElementType: 'INLINE_FILTER' },
+          { AttributeName: 'page', SearchSchemaElementType: 'INLINE_FILTER' },
+        ],
+        ...indexOverrides,
+      },
+    ],
+  };
+}
+
 afterEach(() => {
   ddb.reset();
   s3.reset();
+  vi.useRealTimers();
 });
 describe('native vector APIs', () => {
   it('uses SearchVectors with numeric AttributeValues and inline equality filters', async () => {
@@ -33,22 +68,94 @@ describe('native vector APIs', () => {
     expect(response.hits[0]!.scoreKind).toBe('distance');
     expect(response.usage).toEqual({ VectorSearchRequestBytes: 40 });
   });
-  it('creates and waits for a real vector index, not a scan fallback', async () => {
+  it('validates the deployed vector index and checks search readiness without updating the table', async () => {
+    ddb.on(DescribeTableCommand).resolves({ Table: deployedTable() });
+    ddb.on(SearchVectorsCommand).resolves({ SearchResults: [] });
+
+    await new DynamoStore(config).init();
+
+    expect(ddb.commandCalls(UpdateTableCommand)).toHaveLength(0);
+    expect(ddb.commandCalls(DescribeTableCommand)).toHaveLength(1);
+    const readinessInput = ddb.commandCalls(SearchVectorsCommand)[0]!.args[0].input;
+    expect(readinessInput.IndexName).toBe('documents');
+    expect(readinessInput.SearchVector).toHaveLength(1024);
+    expect(readinessInput.ExpressionAttributeValues![':corpus']).toEqual({ S: '_readiness' });
+  });
+
+  it('instructs deployment immediately when the vector index is missing', async () => {
+    ddb.on(DescribeTableCommand).resolves({ Table: { VectorIndexes: [] } });
+
+    await expect(new DynamoStore(config).init()).rejects.toThrow('run npm run deploy');
+
+    expect(ddb.commandCalls(DescribeTableCommand)).toHaveLength(1);
+    expect(ddb.commandCalls(UpdateTableCommand)).toHaveLength(0);
+    expect(ddb.commandCalls(SearchVectorsCommand)).toHaveLength(0);
+  });
+
+  it.each<[string, Partial<VectorIndexDescription>]>([
+    ['dimensions', { Dimensions: 512 }],
+    ['distance', { DistanceFunction: 'EUCLIDEAN' }],
+    ['vector attribute', { VectorAttribute: { AttributeName: 'embedding' } }],
+    ['projection', { Projection: { ProjectionType: 'KEYS_ONLY' } }],
+    ['search schema', { SearchSchema: [{ AttributeName: 'corpus', SearchSchemaElementType: 'HASH' }] }],
+    [
+      'partition key',
+      {
+        SearchSchema: [
+          { AttributeName: 'corpus', SearchSchemaElementType: 'INLINE_FILTER' },
+          { AttributeName: 'modality', SearchSchemaElementType: 'HASH' },
+          { AttributeName: 'page', SearchSchemaElementType: 'INLINE_FILTER' },
+        ],
+      },
+    ],
+  ])('rejects an incompatible deployed index %s', async (_name, overrides) => {
+    ddb.on(DescribeTableCommand).resolves({ Table: deployedTable(overrides) });
+
+    await expect(new DynamoStore(config).init()).rejects.toThrow('schema mismatch');
+
+    expect(ddb.commandCalls(UpdateTableCommand)).toHaveLength(0);
+    expect(ddb.commandCalls(SearchVectorsCommand)).toHaveLength(0);
+  });
+
+  it('rejects incompatible filter attribute types', async () => {
+    const table = deployedTable();
+    table.AttributeDefinitions!.find((attribute) => attribute.AttributeName === 'page')!.AttributeType = 'S';
+    ddb.on(DescribeTableCommand).resolves({ Table: table });
+
+    await expect(new DynamoStore(config).init()).rejects.toThrow('schema mismatch');
+
+    expect(ddb.commandCalls(SearchVectorsCommand)).toHaveLength(0);
+  });
+
+  it('waits for creation, backfill, and search endpoint propagation in order', async () => {
+    vi.useFakeTimers();
     ddb
       .on(DescribeTableCommand)
-      .resolvesOnce({ Table: { VectorIndexes: [] } })
-      .resolves({ Table: { VectorIndexes: [{ IndexName: 'documents', IndexStatus: 'ACTIVE' }] } });
-    ddb.on(UpdateTableCommand).resolves({});
-    ddb.on(SearchVectorsCommand).resolves({ SearchResults: [] });
-    await new DynamoStore(config).init();
-    const index = ddb.commandCalls(UpdateTableCommand)[0]!.args[0].input.VectorIndexUpdates![0]!.Create!;
-    expect(index.Dimensions).toBe(1024);
-    expect(index.DistanceFunction).toBe('COSINE');
-    expect(index.SearchSchema).toContainEqual({ AttributeName: 'corpus', SearchSchemaElementType: 'HASH' });
-    expect(ddb.commandCalls(UpdateTableCommand)[0]!.args[0].input.AttributeDefinitions).toContainEqual({
-      AttributeName: 'page',
-      AttributeType: 'N',
-    });
+      .resolvesOnce({ Table: deployedTable({ IndexStatus: 'CREATING', Backfilling: true }) })
+      .resolvesOnce({ Table: deployedTable({ Backfilling: true }) })
+      .resolves({ Table: deployedTable() });
+    ddb
+      .on(SearchVectorsCommand)
+      .rejectsOnce(Object.assign(new Error('The specified index is not yet ready'), { name: 'ValidationException' }))
+      .resolves({ SearchResults: [] });
+
+    const ready = new DynamoStore(config).init();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ddb.commandCalls(DescribeTableCommand)).toHaveLength(1);
+    expect(ddb.commandCalls(SearchVectorsCommand)).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(ddb.commandCalls(DescribeTableCommand)).toHaveLength(2);
+    expect(ddb.commandCalls(SearchVectorsCommand)).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(ddb.commandCalls(DescribeTableCommand)).toHaveLength(3);
+    expect(ddb.commandCalls(SearchVectorsCommand)).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await ready;
+    expect(ddb.commandCalls(SearchVectorsCommand)).toHaveLength(2);
+    expect(ddb.commandCalls(UpdateTableCommand)).toHaveLength(0);
   });
   it('retries unprocessed DynamoDB writes without dropping records', async () => {
     const item = { PutRequest: { Item: marshall(record('a', [1, 0])) } };

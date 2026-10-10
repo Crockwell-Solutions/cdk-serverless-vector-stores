@@ -5,8 +5,15 @@ import { awsConfig } from './config.js';
 import { createStore } from './stores/index.js';
 import { sleep, writeJson } from './io.js';
 import type { EmbeddedCorpus, Filter, Hit, LabConfig, Question, StoreName, VectorRecord } from './types.js';
+
+/**
+ * Calculate cosine similarity, rejecting mismatched dimensions and zero vectors.
+ */
 export function cosine(a: number[], b: number[]): number {
-  if (!a.length || a.length !== b.length) throw new Error('Vector dimensions differ.');
+  if (!a.length || a.length !== b.length) {
+    throw new Error('Vector dimensions differ.');
+  }
+
   let dot = 0,
     aa = 0,
     bb = 0;
@@ -15,10 +22,18 @@ export function cosine(a: number[], b: number[]): number {
     aa += a[i]! ** 2;
     bb += b[i]! ** 2;
   }
-  if (!aa || !bb) throw new Error('Cannot compare zero vectors.');
+  if (!aa || !bb) {
+    throw new Error('Cannot compare zero vectors.');
+  }
+
   return dot / Math.sqrt(aa * bb);
 }
+
+/**
+ * Build an exhaustive cosine baseline with the same metadata filters as the store query.
+ */
 export function exactSearch(records: VectorRecord[], vector: number[], topK: number, filter: Filter) {
+  // Use the record ID to make equal-score ordering reproducible.
   return records
     .filter(
       (r) =>
@@ -30,6 +45,10 @@ export function exactSearch(records: VectorRecord[], vector: number[], topK: num
     .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
     .slice(0, topK);
 }
+
+/**
+ * Score recall against the baseline cutoff, accepting ties and counting each hit only once.
+ */
 export function recallAtK(
   hits: Hit[],
   exact: { id: string; score: number }[],
@@ -37,9 +56,15 @@ export function recallAtK(
   vector: number[],
   filter: Filter,
 ): number | null {
-  if (!exact.length) return null;
+  if (!exact.length) {
+    return null;
+  }
+
   const cutoff = exact.at(-1)!.score;
   const byId = new Map(records.map((r) => [r.id, r]));
+
+  // A tied neighbour can be correct even if the baseline's ID ordering excluded it.
+  // The tolerance also allows small floating-point differences at the cutoff.
   const relevant = new Set(
     hits.slice(0, exact.length).flatMap((h) => {
       const r = byId.get(h.id);
@@ -54,10 +79,21 @@ export function recallAtK(
   );
   return relevant.size / exact.length;
 }
+
+/**
+ * Return a nearest-rank percentile without mutating the samples, or null for no data.
+ */
 export function percentile(values: number[], q: number): number | null {
-  if (!values.length) return null;
+  if (!values.length) {
+    return null;
+  }
+
   return [...values].sort((a, b) => a - b)[Math.max(0, Math.ceil(values.length * q) - 1)]!;
 }
+
+/**
+ * One store request, including its phase, retrieval scores, and any failure.
+ */
 export interface Sample {
   store: StoreName;
   question: string;
@@ -72,12 +108,21 @@ export interface Sample {
   error?: string;
   usage?: unknown;
 }
+
+/**
+ * Aggregate successful measured requests, retaining failures and first requests separately.
+ */
 export function summarize(samples: Sample[]) {
   return Object.fromEntries(
     [...new Set(samples.map((s) => s.store))].map((store) => {
       const rows = samples.filter((s) => s.store === store && s.phase === 'warm');
       const ok = rows.filter((s) => !s.error);
+
+      /**
+       * Average only available measurements; an empty set has no score.
+       */
       const mean = (items: number[]) => (items.length ? items.reduce((a, b) => a + b, 0) / items.length : null);
+
       return [
         store,
         {
@@ -104,6 +149,10 @@ export function summarize(samples: Sample[]) {
     }),
   );
 }
+
+/**
+ * Process a shared work queue with at most the requested number of asynchronous workers.
+ */
 async function pool<T>(items: T[], concurrency: number, fn: (value: T) => Promise<void>) {
   let next = 0;
   await Promise.all(
@@ -115,6 +164,10 @@ async function pool<T>(items: T[], concurrency: number, fn: (value: T) => Promis
     }),
   );
 }
+
+/**
+ * Compare stores using shared query vectors, an exact baseline, and separate request phases.
+ */
 export async function benchmark(
   data: EmbeddedCorpus,
   config: LabConfig,
@@ -122,19 +175,27 @@ export async function benchmark(
   questions: Question[],
   options: { topK: number; rounds: number; warmup: number; concurrency: number; idleSeconds: number; output: string },
 ) {
-  if (!questions.length) throw new Error('Question set is empty.');
+  if (!questions.length) {
+    throw new Error('Question set is empty.');
+  }
+
   for (const q of questions) {
-    if (q.expectedPages?.some((p) => !data.corpus.pages.includes(p)))
+    if (q.expectedPages?.some((p) => !data.corpus.pages.includes(p))) {
       throw new Error(
         `Question ${q.id} expects pages outside this corpus. Prepare the sample pages or use another question set.`,
       );
-    if (q.modality === 'image' && !data.records.some((r) => r.modality === 'image'))
+    }
+    if (q.modality === 'image' && !data.records.some((r) => r.modality === 'image')) {
       throw new Error(`Question ${q.id} needs image descriptions. Run embed --vision.`);
+    }
   }
+
+  // Embed once and resolve credentials before measuring store requests.
   const bedrock = new Bedrock(config);
   const vectors = await Promise.all(questions.map((q) => bedrock.embed(q.question)));
   const stores = names.map((name) => createStore(name, config));
   await awsConfig(config).credentials();
+
   if (options.idleSeconds) {
     console.error(
       `Waiting ${options.idleSeconds}s without store requests. Keep all other collection-group clients idle. This does not prove zero OCUs; use metrics.`,
@@ -144,16 +205,23 @@ export async function benchmark(
       console.error(`Idle wait: ${Math.max(0, remaining - 30)}s remaining`);
     }
   }
+
   const startedAt = new Date().toISOString();
   await mkdir(options.output, { recursive: true });
   const rawFile = path.join(options.output, 'samples.jsonl');
   await writeFile(rawFile, '');
   const samples: Sample[] = [];
   const timings: Partial<Record<StoreName, number>> = {};
+
+  /**
+   * Time one search and persist its result, retaining errors as benchmark samples.
+   */
   const run = async (store: (typeof stores)[number], qi: number, phase: Sample['phase'], round: number) => {
     const q = questions[qi]!,
       vector = vectors[qi]!,
       filter: Filter = { corpus: data.corpus.id, modality: q.modality };
+
+    // Compute this query's exact baseline before starting its request timer.
     const exact = exactSearch(data.records, vector, options.topK, filter);
     const start = performance.now();
     let sample: Sample;
@@ -189,15 +257,22 @@ export async function benchmark(
         error: String(error),
       };
     }
+
     samples.push(sample);
     await appendFile(rawFile, JSON.stringify(sample) + '\n');
   };
+
+  // First requests and warmups are recorded but excluded from warm latency/quality summaries.
   for (const store of stores) {
     await run(store, 0, 'first', 0);
-    for (let i = 0; i < options.warmup; i++) await run(store, i % questions.length, 'warmup', i);
+    for (let i = 0; i < options.warmup; i++) {
+      await run(store, i % questions.length, 'warmup', i);
+    }
   }
+
   for (let round = 0; round < options.rounds; round++) {
     for (let n = 0; n < stores.length; n++) {
+      // Rotate the starting store so the same service does not always run first.
       const store = stores[(n + round) % stores.length]!;
       const start = performance.now();
       await pool(
@@ -205,10 +280,12 @@ export async function benchmark(
         options.concurrency,
         (i) => run(store, i, 'warm', round),
       );
+      // Batch timing also covers local scoring and report writes for every request.
       timings[store.name] = (timings[store.name] ?? 0) + performance.now() - start;
     }
     console.error(`Benchmark round ${round + 1}/${options.rounds}`);
   }
+
   const summary = summarize(samples);
   const report = {
     schema: 1,
@@ -229,6 +306,8 @@ export async function benchmark(
     samples,
   };
   await writeJson(path.join(options.output, 'report.json'), report);
+
+  // Export the same measured data for scripts, spreadsheets, and a readable report.
   const csv = [
     'store,requests,errors,p50_ms,p95_ms,p99_ms,recall_at_k,page_hit_rate,mrr,warm_batch_requests_per_second',
     ...Object.entries(summary).map(([name, s]) =>
@@ -247,7 +326,12 @@ export async function benchmark(
     ),
   ].join('\n');
   await writeFile(path.join(options.output, 'summary.csv'), csv + '\n');
+
+  /**
+   * Display missing metrics explicitly instead of implying a measured zero.
+   */
   const f = (n: number | null | undefined) => (n == null ? 'n/a' : n.toFixed(3));
+
   await writeFile(
     path.join(options.output, 'report.md'),
     `# Vector store benchmark\n\nCorpus: ${data.corpus.id}; ${data.records.length} vectors; ${config.region}.\n\n${report.methodology}\n\n| Store | Requests | Errors | p50 ms | p95 ms | p99 ms | Recall@k | Page hit rate |\n|---|---:|---:|---:|---:|---:|---:|---:|\n${Object.entries(
@@ -261,5 +345,6 @@ export async function benchmark(
         '\n',
       )}\n\nFirst-request latency and failures are recorded separately in report.json. No cloud measurements are fabricated. A small corpus is a smoke test, not a large-scale service performance claim.\n`,
   );
+
   return report;
 }

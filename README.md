@@ -14,11 +14,11 @@ The CLI writes to and queries each vector store directly. **There is no Bedrock 
 | ----------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------- |
 | OpenSearch Serverless NextGen | `opensearch` | One vector collection in a **NEXTGEN** group; minimum indexing/search capacity **0**, maximum **2 OCUs each** |
 | S3 Vectors                    | `s3`         | One vector bucket and a 1,024-dimensional cosine index                                                        |
-| DynamoDB vector search        | `dynamodb`   | **PAY_PER_REQUEST** table; `lab init` creates its native vector index and waits for readiness                 |
+| DynamoDB vector search        | `dynamodb`   | **PAY_PER_REQUEST** table with a native 1,024-dimensional cosine vector index created by CloudFormation       |
 
 OpenSearch scales down after 10 minutes without requests to any collection in the group. The CLI refuses Classic endpoints. DynamoDB queries use the native vector search API.
 
-Supporting resources are a private S3 bucket for rendered page images and an operator role trusted by an IAM user/role you provide. Runtime permissions are scoped to lab resources and the default Bedrock models.
+Supporting resources are a private S3 bucket for rendered page images and an unattached IAM managed policy containing runtime permissions scoped to lab resources and the default Bedrock models. The CLI uses your existing AWS credentials directly.
 
 No frontend, API Gateway, Cognito, deployment pipeline, VPC, NAT gateway, provisioned inference, ingestion service, or polling infrastructure. CDK creates a small on-demand cleanup Lambda for the S3 bucket. **Idle compute can be zero; storage is still billed.** Read [cost controls](docs/costs.md) before running large experiments.
 
@@ -46,10 +46,13 @@ flowchart LR
 
 - Node.js **24+** (`.nvmrc`), npm, AWS CLI v2.
 - Poppler: `brew install poppler` on macOS, or `sudo apt-get install poppler-utils` on Debian/Ubuntu.
-- Your AWS credentials supplied in your own terminal through your usual profile/SSO workflow. Never place credentials in this repository.
-- Permissions to deploy CDK/CloudFormation, create the listed resources, pass roles, and assume the generated operator role. Bedrock access to Titan Text Embeddings V2 for embeddings, plus the **EU Nova Lite** inference profile for optional image descriptions and answers. When using that profile, organization SCPs must allow its EU destination regions.
+- Your AWS credentials supplied in your own terminal through environment variables or your usual profile/SSO workflow. Never place credentials in this repository.
+- Permissions to deploy CDK/CloudFormation, create the listed resources, and use the vector stores. When deploying with a role session, `iam:GetRole` on that role allows the deployment command to resolve its full IAM ARN automatically.
+- Bedrock access to Titan Text Embeddings V2 for embeddings, plus the **EU Nova Lite** inference profile for optional image descriptions and answers. When using that profile, organization SCPs must allow its EU destination regions.
 
-Package versions are pinned in `package-lock.json`. Type checking uses TypeScript 7.0.2 through the `@typescript/native` npm alias. The `typescript` alias supplies Microsoft's `@typescript/typescript6` compatibility API for ESLint, following the [official side-by-side setup](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/). `npm run build` invokes TypeScript 7's `tsc`; the compatibility package exposes `tsc6` separately. Use `npm ci` for reproducible installs. Run `npm outdated` when deliberately refreshing dependencies.
+Dependency versions are declared in `package.json` and pinned in `package-lock.json`. Type checking uses the native TypeScript compiler through the `@typescript/native` npm alias. The `typescript` alias supplies Microsoft's `@typescript/typescript6` compatibility API for ESLint, following the [official side-by-side setup](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/). `npm run build` invokes the native compiler's `tsc`; the compatibility package exposes `tsc6` separately. Use `npm ci` for reproducible installs. Run `npm outdated` when deliberately refreshing dependencies.
+
+Dependency audit on **8 October 2026**: all direct dependencies are at their latest stable releases, but `npm audit` reports one high-severity finding in `brace-expansion@5.0.9`, bundled inside `aws-cdk-lib@2.272.0`. npm cannot update that bundled copy independently; it requires an updated CDK release. See the [upstream bundled-dependency issue](https://github.com/aws/aws-cdk/issues/38496). Recheck with `npm outdated` and `npm audit` when refreshing dependencies.
 
 ## Local preparation (no AWS calls)
 
@@ -74,30 +77,52 @@ If you already prepared the original AIP, rerun `prepare`, `embed`, and `ingest`
 
 ## Deploy and initialize
 
-This is a **new stack named `VectorLab`**. If you previously deployed the original template's stacks, this change does not delete them. Review and retire those separately; otherwise their costs can continue.
+The CDK stack is named **`VectorLab`**.
 
-Set your profile and an **IAM role/user ARN**, not an `arn:aws:sts::...:assumed-role/...` session ARN. For SSO, use the actual IAM role ARN including its path. The deployer and runtime operator may be different identities.
+Use the AWS credentials already available in your terminal. If you use a named profile, set `AWS_PROFILE` so deployment and runtime commands use the same identity. Use either exported access-key credentials or a named profile; clear the other before running the project. No ARN is needed.
 
 ```bash
-export AWS_PROFILE=your-profile
 export AWS_REGION=eu-west-1
-export OPERATOR_ARN=arn:aws:iam::123456789012:role/YourRole
+# Optional when using a named profile instead of environment credentials:
+# export AWS_PROFILE=your-profile
 
 # Once per account/region if CDK is not bootstrapped:
 npm run cdk -- bootstrap aws://123456789012/eu-west-1
 
-npm run diff -- --parameters OperatorArn="$OPERATOR_ARN"
-npm run deploy -- --parameters OperatorArn="$OPERATOR_ARN"
+npm run diff
+npm run deploy
 
 npm run lab -- doctor
 npm run lab -- init
 ```
 
-CDK saves `.vector-lab/outputs.json`; every cloud CLI command reads it and assumes the operator role using your credential provider chain. `doctor` checks identity, explicit NextGen zero floors, and model listings without querying a vector index. Listing a model does **not** prove model invocation access.
+`npm run diff` and `npm run deploy` invoke the standard CDK CLI directly. The CDK app resolves your current identity with STS `GetCallerIdentity` and configures OpenSearch's data-access policy for that IAM user or role. Role sessions also use IAM `GetRole` to retain the full role path, including IAM Identity Center (SSO) paths. This lookup is needed because OpenSearch requires an explicit data-access principal in addition to IAM permissions.
 
-New OpenSearch policies can take time to propagate. If `init` receives a 403 immediately after deployment, wait 30–60 seconds and retry; persistent 403s need IAM/data policy inspection. `init` is idempotent and validates existing dimensions/metric. It uses the documented DynamoDB `UpdateTable.VectorIndexUpdates` API because CloudFormation's Table schema currently does not expose vector indexes. Deleting the table removes its vector index.
+For profiles, use `AWS_PROFILE` consistently. CDK's `--profile` option alone is not forwarded to the CDK app or the lab CLI, so it cannot select the identity for these lookups and runtime commands.
 
-`--config path/to/config.json` can supply another CDK outputs file or a direct LabConfig object. Keep each deployment's output file and checkpoints separate. The embedding model and dimensions are intentionally fixed; changing them requires code/configuration updates, new indexes, and a newly embedded corpus. The answer/vision model is configurable through `chatModel`, subject to the operator role's model permissions.
+`npm run synth` and `npm run check` use offline synthesis, leaving the access principal as a required CloudFormation parameter. Deployment resolves the real principal automatically. Use `npm run deploy` or `npx cdk deploy --outputs-file .vector-lab/outputs.json` to synthesize and deploy with your current credentials.
+
+CDK saves `.vector-lab/outputs.json`; every cloud CLI command reads it and uses your credentials directly, without assuming an extra lab role. `doctor` checks identity, explicit NextGen zero floors, and model listings without querying a vector index. Listing a model does **not** prove model invocation access.
+
+OpenSearch requires its data-access policy **as well as** IAM permissions. The stack publishes an unattached `RuntimeAccessPolicy` managed policy, with its ARN in the `RuntimePolicyArn` output. If your identity already has the required permissions, nothing needs attaching. Otherwise, an administrator can grant those scoped permissions through IAM or your IAM Identity Center permission set. Redeploying with a different identity replaces the previous principal in OpenSearch's data-access policy; use the intended runtime identity for deployment.
+
+Deployment and runtime initialization have separate responsibilities:
+
+| Store                 | Created by CDK/CloudFormation during `deploy`            | What `lab init` does                                                                                        |
+| --------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| OpenSearch Serverless | NEXTGEN collection group, collection and access policies | Creates or validates the OpenSearch index mapping                                                           |
+| S3 Vectors            | Vector bucket and vector index                           | Validates the deployed index's dimensions and distance metric                                               |
+| DynamoDB              | On-demand table and native vector index                  | Validates the schema, waits for `ACTIVE` with backfill complete, and confirms that `SearchVectors` succeeds |
+
+`init` does not create or change DynamoDB or S3 vector indexes. Deleting the DynamoDB table removes its vector index.
+
+The stack uses CDK's L2 DynamoDB `Table` and configures its underlying `CfnTable.vectorIndexes` property. A fresh deployment creates both the table and its vector index; no additional Lambda or custom resource is needed for the index. Treat vector-index schemas as immutable and use a new lab when changing the schema.
+
+After recreating the stack, run `deploy`, `lab -- init`, and `lab -- ingest` to populate the new stores. The new outputs identify the new resources; ingestion checkpoints are scoped to that configuration. Cached embeddings can be reused.
+
+New OpenSearch policies can take time to propagate. If `init` receives a 403 immediately after deployment, wait 30–60 seconds and retry; persistent 403s need IAM/data policy inspection.
+
+`--config path/to/config.json` can supply another CDK outputs file or a direct LabConfig object. Keep each deployment's output file and checkpoints separate. The embedding model and dimensions are intentionally fixed; changing them requires code/configuration updates, new indexes, and a newly embedded corpus. The answer/vision model is configurable through `chatModel`, subject to your identity's model permissions.
 
 ## Embed, ingest, and verify
 

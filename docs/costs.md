@@ -27,7 +27,7 @@ For a run-level estimate, multiply observed embedding/vision/answer tokens by th
 
 ## Stop recurring cost
 
-Stop queries and let OpenSearch sleep. Use `lab metrics` to observe OCU history; avoid periodic data-plane pings. Run `npm run destroy` to remove the demo infrastructure and its data. Old stacks from the original template and account-level CDK bootstrap resources are separate and can continue costing money.
+Stop queries and let OpenSearch sleep. Use `lab metrics` to observe OCU history; avoid periodic data-plane pings. Run `npm run destroy` to remove the demo infrastructure and its data. Account-level CDK bootstrap resources are separate and are not removed by this command.
 
 ## Pricing references
 

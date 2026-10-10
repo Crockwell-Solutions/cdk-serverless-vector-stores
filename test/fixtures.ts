@@ -1,7 +1,6 @@
 import type { LabConfig, VectorRecord } from '../src/types.js';
 export const config: LabConfig = {
   region: 'eu-west-1',
-  roleArn: 'arn:aws:iam::123456789012:role/Lab',
   assetsBucket: 'lab-assets',
   tableName: 'documents',
   vectorIndexArn: 'arn:aws:s3vectors:eu-west-1:123456789012:bucket/lab/index/documents',

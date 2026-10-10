@@ -11,6 +11,10 @@ import {
   type VectorRecord,
   type VectorStore,
 } from '../types.js';
+
+/**
+ * Build a filtered k-nearest-neighbor query while excluding vectors from the returned chunk metadata.
+ */
 export function openSearchQuery(vector: number[], topK: number, filter: Filter) {
   return {
     size: topK,
@@ -32,9 +36,17 @@ export function openSearchQuery(vector: number[], topK: number, filter: Filter) 
     },
   };
 }
+
+/**
+ * Access the NextGen OpenSearch Serverless collection through signed HTTP requests.
+ */
 export class OpenSearchStore implements VectorStore {
   readonly name = 'opensearch' as const;
   private signer: SignatureV4;
+
+  /**
+   * Configure request signing and reject endpoints outside the lab's supported NextGen format.
+   */
   constructor(private config: LabConfig) {
     this.signer = new SignatureV4({
       credentials: awsConfig(config).credentials,
@@ -42,14 +54,23 @@ export class OpenSearchStore implements VectorStore {
       service: 'aoss',
       sha256: Sha256,
     });
+
     const url = new URL(config.collectionEndpoint);
-    if (url.protocol !== 'https:' || !url.hostname.endsWith(`.aoss.${config.region}.on.aws`))
+
+    if (url.protocol !== 'https:' || !url.hostname.endsWith(`.aoss.${config.region}.on.aws`)) {
       throw new Error('Expected a NextGen per-collection on.aws endpoint; Classic is deliberately unsupported.');
+    }
   }
+
+  /**
+   * Sign and send a JSON or bulk NDJSON request, retrying selected throttling and availability responses.
+   */
   async request<T>(method: string, suffix: string, body?: unknown, ndjson = false, attempts = 3): Promise<T> {
     const url = new URL(`${this.config.collectionEndpoint.replace(/\/$/, '')}/${suffix}`);
     const payload = body === undefined ? undefined : ndjson ? String(body) : JSON.stringify(body);
+
     for (let attempt = 0; ; attempt++) {
+      // Sign each attempt independently and hash the exact bytes sent as the request body.
       const signed = await this.signer.sign(
         new HttpRequest({
           method,
@@ -71,31 +92,45 @@ export class OpenSearchStore implements VectorStore {
         signal: AbortSignal.timeout(120_000),
       });
       const text = await response.text();
+
       if (!response.ok) {
         if ([429, 502, 503, 504].includes(response.status) && attempt + 1 < attempts) {
           await sleep(500 * 2 ** attempt);
           continue;
         }
+
         const error = new Error(`OpenSearch ${response.status}: ${text.slice(0, 1500)}`);
         Object.assign(error, { status: response.status });
         throw error;
       }
+
       return (text ? JSON.parse(text) : {}) as T;
     }
   }
+
+  /**
+   * Validate an existing vector mapping or create the lab index when the mapping endpoint returns 404.
+   */
   async init() {
     const index = encodeURIComponent(this.config.indexName);
+
     try {
       const mapping = await this.request<
         Record<string, { mappings: { properties: { vector: { dimension: number; space_type: string } } } }>
       >('GET', `${index}/_mapping`);
       const vector = mapping[this.config.indexName]?.mappings.properties.vector;
-      if (vector?.dimension !== this.config.dimensions || vector.space_type !== 'cosinesimil')
+
+      if (vector?.dimension !== this.config.dimensions || vector.space_type !== 'cosinesimil') {
         throw new Error('OpenSearch index schema mismatch.');
+      }
+
       return;
     } catch (error) {
-      if ((error as { status?: number }).status !== 404) throw error;
+      if ((error as { status?: number }).status !== 404) {
+        throw error;
+      }
     }
+
     await this.request('PUT', index, {
       settings: { 'index.knn': true, 'index.knn.remote_index_build.enabled': false },
       mappings: {
@@ -117,8 +152,13 @@ export class OpenSearchStore implements VectorStore {
       },
     });
   }
+
+  /**
+   * Bulk-index bounded batches with deterministic IDs, surfacing item failures even when HTTP succeeds.
+   */
   async upsert(records: VectorRecord[]) {
     for (let offset = 0; offset < records.length; offset += 100) {
+      // Bulk requests alternate action and document lines and require a final newline.
       const body =
         records
           .slice(offset, offset + 100)
@@ -128,19 +168,29 @@ export class OpenSearchStore implements VectorStore {
           ])
           .join('\n') + '\n';
       const result = await this.request<{ errors: boolean; items: unknown[] }>('POST', '_bulk', body, true);
-      if (result.errors)
+
+      if (result.errors) {
         throw new Error(
           `OpenSearch bulk write failed: ${JSON.stringify(result.items).slice(0, 2000)}. Rerun ingest; IDs are deterministic.`,
         );
+      }
     }
   }
+
+  /**
+   * Return complete search results with OpenSearch similarity scores; higher scores are closer.
+   */
   async search(vector: number[], topK: number, filter: Filter): Promise<SearchResponse> {
     const result = await this.request<{
       timed_out?: boolean;
       _shards?: { failed: number };
       hits: { hits: { _source: unknown; _id: string; _score: number }[] };
     }>('POST', `${encodeURIComponent(this.config.indexName)}/_search`, openSearchQuery(vector, topK, filter));
-    if (result.timed_out || result._shards?.failed) throw new Error('OpenSearch returned a partial search response.');
+
+    if (result.timed_out || result._shards?.failed) {
+      throw new Error('OpenSearch returned a partial search response.');
+    }
+
     return {
       hits: result.hits.hits.map((hit) => ({
         ...chunkSchema.parse(hit._source),
@@ -151,8 +201,13 @@ export class OpenSearchStore implements VectorStore {
     };
   }
 }
+
+/**
+ * Encode the request payload's SHA-256 digest as the hexadecimal string used by SigV4.
+ */
 async function sha256(text: string) {
   const hash = new Sha256();
   hash.update(text);
+
   return Buffer.from(await hash.digest()).toString('hex');
 }

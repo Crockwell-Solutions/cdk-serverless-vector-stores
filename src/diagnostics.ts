@@ -8,23 +8,33 @@ import {
 import { CloudWatchClient, ListMetricsCommand, GetMetricDataCommand, type Metric } from '@aws-sdk/client-cloudwatch';
 import { awsConfig } from './config.js';
 import type { LabConfig } from './types.js';
+
+/**
+ * Checks identity, scale-to-zero settings, and model listings without querying a vector index.
+ */
 export async function doctor(config: LabConfig) {
   const options = awsConfig(config);
   const identity = await new STSClient(options).send(new GetCallerIdentityCommand({}));
   const aoss = new OpenSearchServerlessClient(options);
   const groupResponse = await aoss.send(new BatchGetCollectionGroupCommand({ names: [config.collectionGroupName] }));
   const group = groupResponse.collectionGroupDetails?.[0];
+
+  // Both capacity floors must be zero; NEXTGEN alone does not establish the idle configuration.
   if (
     !group ||
     group.generation !== 'NEXTGEN' ||
     group.capacityLimits?.minIndexingCapacityInOCU !== 0 ||
     group.capacityLimits?.minSearchCapacityInOCU !== 0
-  )
+  ) {
     throw new Error(`Scale-to-zero configuration not verified: ${JSON.stringify(groupResponse)}`);
+  }
+
   const collection = await aoss.send(new BatchGetCollectionCommand({ ids: [config.collectionId] }));
   const bedrock = new BedrockClient(options);
   const models = await bedrock.send(new ListFoundationModelsCommand({}));
   const profiles = await bedrock.send(new ListInferenceProfilesCommand({}));
+
+  // Being listed is only discovery evidence, not proof that this caller can invoke the model.
   return {
     identity: { account: identity.Account, arn: identity.Arn },
     group,
@@ -34,9 +44,15 @@ export async function doctor(config: LabConfig) {
     note: 'Control-plane checks only. Model listing does not prove invocation permissions or account enablement. Run embed and query to verify runtime access. No store data-plane calls were made.',
   };
 }
+
+/**
+ * Reads recent collection-group OCU samples from CloudWatch without waking the collection.
+ */
 export async function metrics(config: LabConfig, minutes: number) {
   const client = new CloudWatchClient(awsConfig(config));
   const found: Metric[] = [];
+
+  // Discover the published dimension sets instead of assuming the group's name is the only dimension.
   for (const metricName of ['IndexingOCU', 'SearchOCU']) {
     let nextToken: string | undefined;
     do {
@@ -52,10 +68,16 @@ export async function metrics(config: LabConfig, minutes: number) {
       nextToken = response.NextToken;
     } while (nextToken);
   }
-  if (!found.length)
+
+  // An absent series is unknown usage, not evidence of zero capacity.
+  if (!found.length) {
     return { note: 'No recent group metrics found. Missing data does not mean zero OCUs.', series: [] };
+  }
+
   const end = new Date(),
     start = new Date(end.getTime() - minutes * 60_000);
+
+  // Keep timestamped one-minute sums and CloudWatch's status metadata for interpreting delayed data.
   const response = await client.send(
     new GetMetricDataCommand({
       StartTime: start,
@@ -69,6 +91,7 @@ export async function metrics(config: LabConfig, minutes: number) {
       })),
     }),
   );
+
   return {
     start,
     end,

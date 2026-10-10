@@ -1,6 +1,6 @@
 # Vector store comparison
 
-Verified against AWS documentation on 26 September 2026. Service behavior, availability and pricing can change; preserve package versions and run configuration with your measurements.
+AWS service documentation was reviewed on 26 September 2026; DynamoDB's CDK/CloudFormation vector-index support was rechecked on 8 October 2026. Service behavior, availability and pricing can change; preserve package versions and run configuration with your measurements.
 
 | Topic                         | OpenSearch Serverless NextGen                                         | S3 Vectors                        | DynamoDB vector index                                     |
 | ----------------------------- | --------------------------------------------------------------------- | --------------------------------- | --------------------------------------------------------- |
@@ -21,9 +21,11 @@ The OpenSearch collection belongs to a NEXTGEN group with zero minimum OCUs and 
 
 The index mapping uses `space_type: cosinesimil` and 1x compression for the baseline. NextGen's default 32x compression would add a separate accuracy/cost variable. GPU index build acceleration is explicitly disabled for this small demo. Compression, GPU acceleration, and OpenSearch full-text/hybrid search would be useful separate experiments; the baseline does not claim to test them.
 
-DynamoDB's vector index is initialized through its API, because the current CloudFormation `AWS::DynamoDB::Table` schema does not list VectorIndexes. SearchSchema attributes are declared in UpdateTable AttributeDefinitions. The CLI waits for ACTIVE without backfill, then for a successful call to the dedicated search endpoint. Writes are ordinary DynamoDB list-of-number attributes; SearchVectors expects a plain list of numeric AttributeValues. The current SDK handles endpoint selection. Filters use equality, the common supported subset, even where newer SDK descriptions mention broader filters.
+DynamoDB's vector index is declared in the CDK stack and created by CloudFormation during deployment. CDK's L2 `Table` remains in use; its underlying `CfnTable.vectorIndexes` property defines the 1,024-dimensional `COSINE` index over the `vector` attribute, with `ALL` projection, `corpus` as the `HASH` attribute, and `modality`/`page` as inline filters. This requires no additional Lambda or custom resource. Treat its schema as immutable and use a new index or lab for schema changes.
 
-S3 Vectors stores source text as non-filterable metadata; small corpus/modality/page metadata remains filterable. Document content is available in every retrieval response without an extra content-table lookup, keeping baseline payloads comparable.
+The CLI validates the deployed DynamoDB index, waits for `ACTIVE` without backfill, then for a successful call to the dedicated search endpoint. It does not create indexes through `UpdateTable`. Writes are ordinary DynamoDB list-of-number attributes; `SearchVectors` expects a plain list of numeric AttributeValues. The current SDK handles endpoint selection. Filters use equality, the common supported subset, even where newer SDK descriptions mention broader filters.
+
+CDK/CloudFormation also creates the S3 Vectors bucket and index; `lab init` validates the deployed index's dimensions and distance metric. S3 Vectors stores source text as non-filterable metadata; small corpus/modality/page metadata remains filterable. Document content is available in every retrieval response without an extra content-table lookup, keeping baseline payloads comparable.
 
 Image retrieval embeds **descriptions** of rendered PDF pages. The three vector engines see the same embedding space and cannot independently interpret images. Any image understanding comes from Bedrock. Direct RAG can pass the selected original JPEGs to the answer model. Use both caption retrieval quality and human assessment of the final visual answer; they measure different things.
 
