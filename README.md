@@ -4,9 +4,9 @@ A command-line AWS CDK project for testing and benchmarking **OpenSearch Serverl
 
 The three stores receive the **same float32 embeddings, chunks, document IDs, metadata and cosine metric**. The benchmark measures retrieval independently of model inference, with an exact local baseline. It produces actual measurements when you run it against your account; no cloud benchmark numbers are bundled.
 
-Use the lab to compare retrieval latency, recall, metadata filtering, write visibility, and first-request behavior after idle. The supplied aviation PDF supports both text queries and queries about charts and tables. See the [store comparison](docs/comparison.md), [benchmark methodology](docs/benchmarking.md), and [cost controls](docs/costs.md) for interpretation.
+Use the lab to compare retrieval latency, recall, metadata filtering, write visibility, and first-request behavior after idle. The supplied aviation PDF supports both text queries and queries about charts and tables.
 
-The CLI writes to and queries each vector store directly. **There is no Bedrock Knowledge Base integration.** The current workflow uses Bedrock Titan for corpus and query embeddings, reusing cached embeddings where available. Bedrock image descriptions and answers generated from retrieved evidence are optional. Query embeddings are prepared before benchmark timing starts; the benchmark does not generate answers.
+The CLI writes to and queries each vector store directly. **There is no Bedrock Knowledge Base integration** The current workflow uses Bedrock Titan for corpus and query embeddings, reusing cached embeddings where available. Query embeddings are prepared before benchmark timing starts; the benchmark does not generate answers.
 
 ## What is deployed
 
@@ -16,31 +16,13 @@ The CLI writes to and queries each vector store directly. **There is no Bedrock 
 | S3 Vectors                    | `s3`         | One vector bucket and a 1,024-dimensional cosine index                                                        |
 | DynamoDB vector search        | `dynamodb`   | **PAY_PER_REQUEST** table with a native 1,024-dimensional cosine vector index created by CloudFormation       |
 
-OpenSearch scales down after 10 minutes without requests to any collection in the group. The CLI refuses Classic endpoints. DynamoDB queries use the native vector search API.
-
 Supporting resources are a private S3 bucket for rendered page images and an unattached IAM managed policy containing runtime permissions scoped to lab resources and the default Bedrock models. The CLI uses your existing AWS credentials directly.
 
-No frontend, API Gateway, Cognito, deployment pipeline, VPC, NAT gateway, provisioned inference, ingestion service, or polling infrastructure. CDK creates a small on-demand cleanup Lambda for the S3 bucket. **Idle compute can be zero; storage is still billed.** Read [cost controls](docs/costs.md) before running large experiments.
+No frontend, API Gateway, Cognito, deployment pipeline, VPC, NAT gateway, provisioned inference, ingestion service, or polling infrastructure. CDK creates a small on-demand cleanup Lambda for the S3 bucket. **Idle compute can be zero; storage is still billed.**
 
-```mermaid
-flowchart LR
-  PDF[Bundled nine-page AIP PDF] --> Prepare[Local text extraction and optional page rendering]
-  Prepare -->|Text chunks| Embed[Bedrock Titan embeddings]
-  Prepare -->|Optional rendered pages| Vision[Bedrock image descriptions]
-  Vision --> Embed
-  Embed --> Cache[One cached embedded corpus]
-  Cache --> OS[OpenSearch NextGen]
-  Cache --> S3[S3 Vectors]
-  Cache --> DDB[DynamoDB vector index]
-  Query[Question plus cached query embedding] --> OS
-  Query --> S3
-  Query --> DDB
-  OS --> Evidence[Retrieved text and page citations]
-  S3 --> Evidence
-  DDB --> Evidence
-  Evidence --> Answer[Optional Bedrock Converse with original page images]
-  Evidence --> Report[Latency and retrieval-quality reports]
-```
+The overall architecture is shown in this diagram:
+
+![Architecture Overview](severless-vectors-architecture.png "Architecture Overview")
 
 ## Prerequisites
 
@@ -49,10 +31,6 @@ flowchart LR
 - Your AWS credentials supplied in your own terminal through environment variables or your usual profile/SSO workflow. Never place credentials in this repository.
 - Permissions to deploy CDK/CloudFormation, create the listed resources, and use the vector stores. When deploying with a role session, `iam:GetRole` on that role allows the deployment command to resolve its full IAM ARN automatically.
 - Bedrock access to Titan Text Embeddings V2 for embeddings, plus the **EU Nova Lite** inference profile for optional image descriptions and answers. When using that profile, organization SCPs must allow its EU destination regions.
-
-Dependency versions are declared in `package.json` and pinned in `package-lock.json`. Type checking uses the native TypeScript compiler through the `@typescript/native` npm alias. The `typescript` alias supplies Microsoft's `@typescript/typescript6` compatibility API for ESLint, following the [official side-by-side setup](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/). `npm run build` invokes the native compiler's `tsc`; the compatibility package exposes `tsc6` separately. Use `npm ci` for reproducible installs. Run `npm outdated` when deliberately refreshing dependencies.
-
-Dependency audit on **8 October 2026**: all direct dependencies are at their latest stable releases, but `npm audit` reports one high-severity finding in `brace-expansion@5.0.9`, bundled inside `aws-cdk-lib@2.272.0`. npm cannot update that bundled copy independently; it requires an updated CDK release. See the [upstream bundled-dependency issue](https://github.com/aws/aws-cdk/issues/38496). Recheck with `npm outdated` and `npm audit` when refreshing dependencies.
 
 ## Local preparation (no AWS calls)
 
@@ -82,25 +60,14 @@ The CDK stack is named **`VectorLab`**.
 Use the AWS credentials already available in your terminal. If you use a named profile, set `AWS_PROFILE` so deployment and runtime commands use the same identity. Use either exported access-key credentials or a named profile; clear the other before running the project. No ARN is needed.
 
 ```bash
-export AWS_REGION=eu-west-1
-# Optional when using a named profile instead of environment credentials:
-# export AWS_PROFILE=your-profile
-
 # Once per account/region if CDK is not bootstrapped:
 npm run cdk -- bootstrap aws://123456789012/eu-west-1
 
-npm run diff
 npm run deploy
 
 npm run lab -- doctor
 npm run lab -- init
 ```
-
-`npm run diff` and `npm run deploy` invoke the standard CDK CLI directly. The CDK app resolves your current identity with STS `GetCallerIdentity` and configures OpenSearch's data-access policy for that IAM user or role. Role sessions also use IAM `GetRole` to retain the full role path, including IAM Identity Center (SSO) paths. This lookup is needed because OpenSearch requires an explicit data-access principal in addition to IAM permissions.
-
-For profiles, use `AWS_PROFILE` consistently. CDK's `--profile` option alone is not forwarded to the CDK app or the lab CLI, so it cannot select the identity for these lookups and runtime commands.
-
-`npm run synth` and `npm run check` use offline synthesis, leaving the access principal as a required CloudFormation parameter. Deployment resolves the real principal automatically. Use `npm run deploy` or `npx cdk deploy --outputs-file .vector-lab/outputs.json` to synthesize and deploy with your current credentials.
 
 CDK saves `.vector-lab/outputs.json`; every cloud CLI command reads it and uses your credentials directly, without assuming an extra lab role. `doctor` checks identity, explicit NextGen zero floors, and model listings without querying a vector index. Listing a model does **not** prove model invocation access.
 
@@ -117,6 +84,8 @@ Deployment and runtime initialization have separate responsibilities:
 `init` does not create or change DynamoDB or S3 vector indexes. Deleting the DynamoDB table removes its vector index.
 
 The stack uses CDK's L2 DynamoDB `Table` and configures its underlying `CfnTable.vectorIndexes` property. A fresh deployment creates both the table and its vector index; no additional Lambda or custom resource is needed for the index. Treat vector-index schemas as immutable and use a new lab when changing the schema.
+
+At the time of writing, some CDK L1 constructs are used. e.g. CDK's L2 Table has no vector-index API yet, so the L1 Cfn construct is used.
 
 After recreating the stack, run `deploy`, `lab -- init`, and `lab -- ingest` to populate the new stores. The new outputs identify the new resources; ingestion checkpoints are scoped to that configuration. Cached embeddings can be reused.
 
@@ -186,7 +155,7 @@ npm run lab -- metrics --minutes 30
 
 Each run writes `samples.jsonl`, `report.json`, `summary.csv` and `report.md` under a new `.vector-lab/reports/<timestamp>/` directory. An explicit `--output` directory is overwritten, so use a new path when retaining runs.
 
-Reports include p50/p95/p99 successful-request latency, errors, tie-aware recall@k against exact cosine search, labelled-page hit rate, mean reciprocal rank, and first-request timings. Store order rotates across measured rounds. You can choose `--stores s3,dynamodb` or another subset. Failing samples remain in the report, and the command exits nonzero if any request failed. Latency includes network/SDK retries; model generation is outside retrieval benchmarks. See [methodology](docs/benchmarking.md) for fair interpretation and larger experiments.
+Reports include p50/p95/p99 successful-request latency, errors, tie-aware recall@k against exact cosine search, labelled-page hit rate, mean reciprocal rank, and first-request timings. Store order rotates across measured rounds. You can choose `--stores s3,dynamodb` or another subset. Failing samples remain in the report, and the command exits nonzero if any request failed. Latency includes network/SDK retries; model generation is outside retrieval benchmarks.
 
 An elapsed idle wait **does not prove a cold start**. CloudWatch OCU metrics are the evidence; missing datapoints are never treated as zero. `metrics` uses control-plane APIs and does not wake the collection. Queries, `verify`, and OpenSearch index checks do wake it. No scheduled health checks are deployed.
 
@@ -198,7 +167,7 @@ npm run lab -- metrics
 npm run destroy
 ```
 
-`usage` totals locally recorded actual Bedrock token use, not an AWS bill. Storage, vector requests, and OpenSearch active OCU time (including idle timeout) are additional. [Cost controls](docs/costs.md) explains the billing dimensions and limitations.
+`usage` totals locally recorded actual Bedrock token use, not an AWS bill. Storage, vector requests, and OpenSearch active OCU time (including idle timeout) are additional.
 
 Destroy deletes demo tables, vector indexes/collections, and S3 objects. Do not use this stack for irreplaceable data. The source PDF and local caches/reports remain on your machine. CDK bootstrap resources are account-level and are not removed by this stack. Do not leave manually created extra indexes in the lab's vector bucket: they can block bucket deletion.
 
