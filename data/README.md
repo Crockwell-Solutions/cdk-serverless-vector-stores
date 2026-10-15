@@ -16,8 +16,4 @@ The excerpt preserves the source text, tables, charts, and printed AIP page iden
 | 8             | 2781              | Heathrow aerodrome chart                               |
 | 9             | 2782              | Heathrow aircraft ground movement/all taxiways chart   |
 
-Source: the user-supplied UK Aeronautical Information Publication, `EG-aip-en-03-09-2026.pdf` (3 September 2026), containing 3,876 pages and 746,384,998 bytes. The full original remains excluded from Git. The excerpt was assembled without rasterizing or downsampling the source pages; the original publication notices and chart markings remain on the pages.
-
-Demo PDF SHA-256: `888abd06f9edafaeec2ef89d30591bb4558bd14b8327e7317b24c5990d8fea23`.
-
-This dated excerpt is for software demonstrations and retrieval evaluation, not flight planning or operational use.
+Source: UK Aeronautical Information Publication, `EG-aip-en-03-09-2026.pdf` (3 September 2026), containing 3,876 pages and 746,384,998 bytes.
